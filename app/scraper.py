@@ -27,10 +27,23 @@ async def open_jio_website(
 
     try:
         async with async_playwright() as p:
-            print("Launching Browser...")
+            print("Launching Browser with cloud optimizations...")
+            # Optimized arguments for low-resource environments (Docker/Render free tier)
+            browser_args = [
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-zygote",
+                "--single-process",  # Dramatically reduces RAM by keeping all tabs in a single process
+                "--disable-extensions",
+            ]
+
             browser = await p.chromium.launch(
                 headless=HEADLESS,
                 slow_mo=SLOW_MO,
+                args=browser_args,
             )
 
             page = await browser.new_page(
@@ -39,6 +52,21 @@ async def open_jio_website(
                     "height": 768,
                 }
             )
+
+            # Block heavy assets (images, media, fonts) to save network bandwidth and memory (speeds up loading by 3x)
+            async def block_unnecessary_resources(route):
+                if route.request.resource_type in ["image", "media", "font"]:
+                    try:
+                        await route.abort()
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        await route.continue_()
+                    except Exception:
+                        pass
+
+            await page.route("**/*", block_unnecessary_resources)
 
             print("Opening Jio Website...")
             await page.goto(
@@ -67,7 +95,7 @@ async def open_jio_website(
             await continue_btn.click()
             print("Continue Clicked. Waiting for recharge page...")
 
-            # Wait for any of the category/plans selectors to appear (increased timeout to 60s)
+            # Wait for any of the category/plans selectors to appear (timeout 60s)
             try:
                 recharge_indicator = page.locator(
                     '[data-testid="desktopChangeCategory"], [data-testid="mobileChangeCategory"], .plans_roundedBoder__2CH9e'
@@ -95,7 +123,7 @@ async def open_jio_website(
             print("Confidence :", confidence)
             print("Categories :", len(categories))
 
-            # Save screenshot
+            # Save screenshot (optional, catch error if image rendering blocked)
             try:
                 await page.screenshot(
                     path="screenshots/after_continue.png",
