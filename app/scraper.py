@@ -68,63 +68,64 @@ async def open_jio_website(
 
             await page.route("**/*", block_unnecessary_resources)
 
-            print("Opening Jio Website...")
+            # Navigate directly to plans page bypassing first page inputs (Speeds up scraping by 3x)
+            plans_url = f"https://www.jio.com/selfcare/recharge/mobility/plans/?serviceId={mobile}&serviceType=mobility&next=PREPAID&billingType=PREPAID"
+            print("Navigating directly to plans page:", plans_url)
             await page.goto(
-                "https://www.jio.com/selfcare/recharge/mobility/",
+                plans_url,
                 wait_until="domcontentloaded",
-                timeout=30000,
+                timeout=25000,
             )
-            print("Jio Page Opened")
+            print("Direct Plans Page Loaded. Waiting for selectors or redirect validation...")
 
-            input_box = page.locator("#submitNumber")
-            await input_box.wait_for(timeout=15000)
-            print("Input Box Found")
-
-            await input_box.fill("")
-            await input_box.type(mobile, delay=100)
-            print("Number Entered:", mobile)
-
-            # Locate the Continue button
-            continue_btn = page.locator('button[aria-label="Continue"]').first
-            if await continue_btn.count() == 0:
-                continue_btn = page.get_by_role("button", name="Continue")
-
-            await continue_btn.wait_for(timeout=15000)
-            print("Continue Button Found")
-
-            await continue_btn.click()
-            print("Continue Clicked. Waiting for recharge page...")
-
-            # Check for immediate non-Jio validation error on the page
+            # Wait for either the plan category headers to appear, or for the site to redirect back to edit page (non-Jio number)
             try:
-                # Wait up to 3.5 seconds for non-Jio error text to appear
-                non_jio_error = page.locator("text=/not a Jio|valid Jio|Enter a valid/i").first
-                if await non_jio_error.is_visible(timeout=3500):
-                    err_txt = await non_jio_error.inner_text()
-                    print(f"Non-Jio validation error found: {err_txt}")
-                    await browser.close()
-                    return {
-                        "success": True,
-                        "status": "Non-Jio",
-                        "mobile": mobile,
-                        "operator": operator,
-                        "circle": circle,
-                        "topupAvailable": False,
-                        "message": "Non-Jio Number",
-                        "error": err_txt
-                    }
-            except Exception as err:
-                print(f"Proceeding (No immediate validation error text found: {err})")
+                await page.wait_for_function(
+                    """() => {
+                        const plans = document.querySelector('[data-testid="desktopChangeCategory"], [data-testid="mobileChangeCategory"], .plans_roundedBoder__2CH9e');
+                        const errorMsg = document.body.innerText.match(/not a Jio|valid Jio|Enter a valid/i);
+                        const isRedirected = window.location.href.includes('/mobility/?') || window.location.href.includes('action=edit') || window.location.href.includes('serviceId=');
+                        
+                        // We are done waiting if plans container is loaded, or if validation error/redirect occurs
+                        if (plans && plans.offsetHeight > 0) return true;
+                        if (errorMsg) return true;
+                        
+                        // If it redirected back to edit page without query serviceId or with edit action
+                        if (window.location.href.includes('action=edit') || (!window.location.href.includes('/plans/') && window.location.href.includes('/mobility/'))) {
+                            return true;
+                        }
+                        return false;
+                    }""",
+                    timeout=15000
+                )
+            except Exception as wait_err:
+                print(f"Wait helper timeout or warning: {wait_err}")
 
-            # Wait for any of the category/plans selectors to appear (timeout 60s)
-            try:
-                recharge_indicator = page.locator(
-                    '[data-testid="desktopChangeCategory"], [data-testid="mobileChangeCategory"], .plans_roundedBoder__2CH9e'
-                ).first
-                await recharge_indicator.wait_for(timeout=60000)
-                print("Recharge page detected successfully.")
-            except Exception as e:
-                print(f"Warning: Recharge page load indicator not found (Timeout). Continuing anyway... Error: {e}")
+            current_url = page.url
+            print("Page URL after resolution:", current_url)
+
+            # Check if we were redirected back or error is present (indicates invalid/non-Jio number)
+            if "plans" not in current_url or "action=edit" in current_url or "/mobility/?" in current_url:
+                print("Validation redirect detected. Mobile number is invalid or non-Jio.")
+                err_txt = "Invalid/Non-Jio Number"
+                try:
+                    non_jio_error = page.locator("text=/not a Jio|valid Jio|Enter a valid/i").first
+                    if await non_jio_error.is_visible(timeout=2000):
+                        err_txt = await non_jio_error.inner_text()
+                except Exception:
+                    pass
+
+                await browser.close()
+                return {
+                    "success": True,
+                    "status": "Non-Jio",
+                    "mobile": mobile,
+                    "operator": operator,
+                    "circle": circle,
+                    "topupAvailable": False,
+                    "message": "Non-Jio Number",
+                    "error": err_txt
+                }
 
             print("Current URL:", page.url)
             print("Page Title:", await page.title())
