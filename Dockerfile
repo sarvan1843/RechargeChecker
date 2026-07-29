@@ -1,5 +1,5 @@
-# Use the official Microsoft Playwright Python image which contains Python, Chromium, and all dependencies pre-installed
-FROM mcr.microsoft.com/playwright/python:v1.45.0-noble
+# Use the official Microsoft Playwright Python image based on jammy (Ubuntu 22.04)
+FROM mcr.microsoft.com/playwright/python:v1.45.0-jammy
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
