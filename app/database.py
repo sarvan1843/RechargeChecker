@@ -14,12 +14,22 @@ def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Create users table
+    # Schema Migration Check: If old table with 'username' exists, drop it to migrate to V3 mobile/pin structure
+    try:
+        cursor.execute("SELECT username FROM users LIMIT 1")
+        print("Migration: Dropping legacy 'users' table to upgrade to V3 mobile/pin layout.")
+        cursor.execute("DROP TABLE users")
+        conn.commit()
+    except sqlite3.OperationalError:
+        # Table does not exist or already updated to mobile/pin, ignore
+        pass
+    
+    # Create V3 users table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
+            mobile TEXT UNIQUE NOT NULL,
+            pin_hash TEXT NOT NULL,
             email TEXT UNIQUE,
             full_name TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -41,13 +51,13 @@ def init_db():
     print("Database initialized successfully.")
 
 # Database Access Operations
-def create_user(username, password_hash, email=None, full_name=None):
+def create_user(mobile, pin_hash, email=None, full_name=None):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
         cursor.execute(
-            "INSERT INTO users (username, password_hash, email, full_name) VALUES (?, ?, ?, ?)",
-            (username, password_hash, email, full_name)
+            "INSERT INTO users (mobile, pin_hash, email, full_name) VALUES (?, ?, ?, ?)",
+            (mobile, pin_hash, email, full_name)
         )
         conn.commit()
         user_id = cursor.lastrowid
@@ -58,10 +68,10 @@ def create_user(username, password_hash, email=None, full_name=None):
     finally:
         conn.close()
 
-def get_user_by_username(username):
+def get_user_by_mobile(mobile):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
+    cursor.execute("SELECT * FROM users WHERE mobile = ?", (mobile,))
     row = cursor.fetchone()
     conn.close()
     if row:
@@ -89,7 +99,7 @@ def get_otp(email):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM otps WHERE email = ?", (email,))
-    row = cursor.fetchone()
+    row = json_row = cursor.fetchone()
     conn.close()
     if row:
         return dict(row)

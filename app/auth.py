@@ -9,7 +9,7 @@ SECRET_KEY = b"recharge-checker-secret-key-super-secure-2026"
 
 def hash_password(password: str) -> str:
     """
-    Hashes a password with a secure random salt.
+    Hashes a pin/password with a secure random salt.
     """
     salt = secrets.token_hex(8)
     h = hashlib.sha256((password + salt).encode()).hexdigest()
@@ -17,7 +17,7 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, hashed: str) -> bool:
     """
-    Verifies a password against its hash.
+    Verifies a pin/password against its hash.
     """
     if not hashed or ":" not in hashed:
         return False
@@ -25,12 +25,12 @@ def verify_password(password: str, hashed: str) -> bool:
     test_h = hashlib.sha256((password + salt).encode()).hexdigest()
     return h == test_h
 
-def generate_token(username: str, expires_in_seconds: int = 86400) -> str:
+def generate_token(mobile: str, expires_in_seconds: int = 86400) -> str:
     """
-    Generates a secure signed token (similar to JWT).
+    Generates a secure signed token mapping to the user's mobile number.
     """
     expiry = int(time.time()) + expires_in_seconds
-    payload = {"username": username, "exp": expiry}
+    payload = {"mobile": mobile, "exp": expiry}
     payload_json = json.dumps(payload)
     payload_b64 = base64.urlsafe_b64encode(payload_json.encode()).decode().rstrip("=")
     
@@ -42,7 +42,7 @@ def generate_token(username: str, expires_in_seconds: int = 86400) -> str:
 
 def verify_token(token: str) -> str or None:
     """
-    Verifies the signed token and returns the username if valid.
+    Verifies the signed token and returns the mobile number if valid.
     """
     try:
         if not token or "." not in token:
@@ -69,7 +69,7 @@ def verify_token(token: str) -> str or None:
             print("Token expired.")
             return None
             
-        return payload["username"]
+        return payload["mobile"]
     except Exception as e:
         print(f"Token verification failed: {e}")
         return None

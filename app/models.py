@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 
 class RechargeRequest(BaseModel):
     mobile: str
@@ -7,14 +7,14 @@ class RechargeRequest(BaseModel):
     circle: str
 
 class UserRegister(BaseModel):
-    username: str
-    password: str
+    mobile: str
+    pin: str
     email: Optional[str] = None
     fullName: Optional[str] = None
 
 class UserLogin(BaseModel):
-    username: str
-    password: str
+    mobile: str
+    pin: str
 
 class OTPRequest(BaseModel):
     email: str

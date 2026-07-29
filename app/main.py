@@ -5,12 +5,12 @@ import time
 from app.models import RechargeRequest, UserRegister, UserLogin, OTPRequest, OTPVerify
 from app.logger import logger
 from app.scraper import open_jio_website
-from app.database import init_db, create_user, get_user_by_username, get_user_by_email, store_otp, get_otp, delete_otp
+from app.database import init_db, create_user, get_user_by_mobile, get_user_by_email, store_otp, get_otp, delete_otp
 from app.auth import hash_password, verify_password, generate_token, verify_token
 
 app = FastAPI(
     title="Recharge Checker API",
-    version="2.2.0"
+    version="3.0.0"
 )
 
 # CORS middleware configuration
@@ -40,14 +40,20 @@ async def home():
 @app.post("/auth/register")
 async def register(data: UserRegister):
     try:
-        # Check if username or email already exists
-        if get_user_by_username(data.username):
-            return {"success": False, "message": "Username already exists"}
+        # Validate inputs
+        if len(data.mobile) != 10 or not data.mobile.isdigit():
+            return {"success": False, "message": "Mobile number must be exactly 10 digits"}
+        if len(data.pin) != 4 or not data.pin.isdigit():
+            return {"success": False, "message": "PIN must be exactly 4 digits"}
+
+        # Check if mobile or email already exists
+        if get_user_by_mobile(data.mobile):
+            return {"success": False, "message": "Mobile number already registered"}
         if data.email and get_user_by_email(data.email):
             return {"success": False, "message": "Email already exists"}
         
-        hashed = hash_password(data.password)
-        create_user(data.username, hashed, data.email, data.fullName)
+        hashed = hash_password(data.pin)
+        create_user(data.mobile, hashed, data.email, data.fullName)
         return {"success": True, "message": "Registration successful"}
     except Exception as e:
         logger.exception("REGISTRATION FAILED")
@@ -56,18 +62,23 @@ async def register(data: UserRegister):
 @app.post("/auth/login")
 async def login(data: UserLogin):
     try:
-        user = get_user_by_username(data.username)
+        if len(data.mobile) != 10 or not data.mobile.isdigit():
+            return {"success": False, "message": "Invalid 10-digit mobile number"}
+        if len(data.pin) != 4 or not data.pin.isdigit():
+            return {"success": False, "message": "Invalid 4-digit PIN"}
+
+        user = get_user_by_mobile(data.mobile)
         if not user:
-            return {"success": False, "message": "Invalid username or password"}
+            return {"success": False, "message": "Mobile number is not registered"}
         
-        if not verify_password(data.password, user["password_hash"]):
-            return {"success": False, "message": "Invalid username or password"}
+        if not verify_password(data.pin, user["pin_hash"]):
+            return {"success": False, "message": "Incorrect 4-digit PIN"}
         
-        token = generate_token(data.username)
+        token = generate_token(data.mobile)
         return {
             "success": True,
             "token": token,
-            "username": user["username"],
+            "mobile": user["mobile"],
             "email": user["email"] or "",
             "fullName": user["full_name"] or "",
             "message": "Login successful"
@@ -116,17 +127,17 @@ async def profile(authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid authorization header")
     
     token = authorization.split(" ")[1]
-    username = verify_token(token)
-    if not username:
+    mobile = verify_token(token)
+    if not mobile:
         raise HTTPException(status_code=401, detail="Token expired or invalid")
         
-    user = get_user_by_username(username)
+    user = get_user_by_mobile(mobile)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
         
     return {
         "success": True,
-        "username": user["username"],
+        "mobile": user["mobile"],
         "email": user["email"] or "",
         "fullName": user["full_name"] or "",
         "createdAt": user["created_at"]
