@@ -1,0 +1,19 @@
+# Python virtual environments
+venv/
+venv312/
+.venv/
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Application data & logs
+logs/
+screenshots/
+.env
+
+# OS temporary files
+.DS_Store
+Thumbs.db
