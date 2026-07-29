@@ -95,6 +95,27 @@ async def open_jio_website(
             await continue_btn.click()
             print("Continue Clicked. Waiting for recharge page...")
 
+            # Check for immediate non-Jio validation error on the page
+            try:
+                # Wait up to 3.5 seconds for non-Jio error text to appear
+                non_jio_error = page.locator("text=/not a Jio|valid Jio|Enter a valid/i").first
+                if await non_jio_error.is_visible(timeout=3500):
+                    err_txt = await non_jio_error.inner_text()
+                    print(f"Non-Jio validation error found: {err_txt}")
+                    await browser.close()
+                    return {
+                        "success": True,
+                        "status": "Non-Jio",
+                        "mobile": mobile,
+                        "operator": operator,
+                        "circle": circle,
+                        "topupAvailable": False,
+                        "message": "Non-Jio Number",
+                        "error": err_txt
+                    }
+            except Exception as err:
+                print(f"Proceeding (No immediate validation error text found: {err})")
+
             # Wait for any of the category/plans selectors to appear (timeout 60s)
             try:
                 recharge_indicator = page.locator(
