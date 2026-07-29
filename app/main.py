@@ -1,15 +1,19 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+import time
 
-from app.models import RechargeRequest
+from app.models import RechargeRequest, UserRegister, UserLogin, OTPRequest, OTPVerify
 from app.logger import logger
 from app.scraper import open_jio_website
+from app.database import init_db, create_user, get_user_by_username, get_user_by_email, store_otp, get_otp, delete_otp
+from app.auth import hash_password, verify_password, generate_token, verify_token
 
 app = FastAPI(
     title="Recharge Checker API",
-    version="2.1.0"
+    version="2.2.0"
 )
 
+# CORS middleware configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,6 +22,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+def on_startup():
+    init_db()
 
 @app.get("/")
 async def home():
@@ -26,10 +33,111 @@ async def home():
         "message": "Recharge Checker Backend Running"
     }
 
+# ----------------------------------------------------
+# AUTHENTICATION ROUTERS
+# ----------------------------------------------------
+
+@app.post("/auth/register")
+async def register(data: UserRegister):
+    try:
+        # Check if username or email already exists
+        if get_user_by_username(data.username):
+            return {"success": False, "message": "Username already exists"}
+        if data.email and get_user_by_email(data.email):
+            return {"success": False, "message": "Email already exists"}
+        
+        hashed = hash_password(data.password)
+        create_user(data.username, hashed, data.email, data.fullName)
+        return {"success": True, "message": "Registration successful"}
+    except Exception as e:
+        logger.exception("REGISTRATION FAILED")
+        return {"success": False, "message": str(e)}
+
+@app.post("/auth/login")
+async def login(data: UserLogin):
+    try:
+        user = get_user_by_username(data.username)
+        if not user:
+            return {"success": False, "message": "Invalid username or password"}
+        
+        if not verify_password(data.password, user["password_hash"]):
+            return {"success": False, "message": "Invalid username or password"}
+        
+        token = generate_token(data.username)
+        return {
+            "success": True,
+            "token": token,
+            "username": user["username"],
+            "email": user["email"] or "",
+            "fullName": user["full_name"] or "",
+            "message": "Login successful"
+        }
+    except Exception as e:
+        logger.exception("LOGIN FAILED")
+        return {"success": False, "message": str(e)}
+
+@app.post("/auth/send-otp")
+async def send_otp(data: OTPRequest):
+    try:
+        otp_code = "123456" # Mock OTP code for simplicity and testing
+        expiry = int(time.time()) + 300 # 5 minutes
+        store_otp(data.email, otp_code, expiry)
+        return {
+            "success": True,
+            "message": f"OTP sent to {data.email}. (Test Code: {otp_code})"
+        }
+    except Exception as e:
+        logger.exception("SEND OTP FAILED")
+        return {"success": False, "message": str(e)}
+
+@app.post("/auth/verify-otp")
+async def verify_otp(data: OTPVerify):
+    try:
+        otp_record = get_otp(data.email)
+        if not otp_record:
+            return {"success": False, "message": "OTP not requested or expired"}
+        
+        if int(time.time()) > otp_record["expires_at"]:
+            delete_otp(data.email)
+            return {"success": False, "message": "OTP expired"}
+        
+        if otp_record["otp"] != data.otp:
+            return {"success": False, "message": "Invalid OTP code"}
+        
+        delete_otp(data.email)
+        return {"success": True, "message": "OTP verified successfully"}
+    except Exception as e:
+        logger.exception("VERIFY OTP FAILED")
+        return {"success": False, "message": str(e)}
+
+@app.get("/auth/profile")
+async def profile(authorization: str = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+    
+    token = authorization.split(" ")[1]
+    username = verify_token(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Token expired or invalid")
+        
+    user = get_user_by_username(username)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    return {
+        "success": True,
+        "username": user["username"],
+        "email": user["email"] or "",
+        "fullName": user["full_name"] or "",
+        "createdAt": user["created_at"]
+    }
+
+# ----------------------------------------------------
+# RECHARGE CHECK ROUTER
+# ----------------------------------------------------
 
 @app.post("/check-recharge")
 async def check_recharge(data: RechargeRequest):
-
     logger.info("=" * 60)
     logger.info("NEW REQUEST RECEIVED")
     logger.info(f"Mobile   : {data.mobile}")
@@ -44,7 +152,6 @@ async def check_recharge(data: RechargeRequest):
     print("=" * 60)
 
     try:
-
         result = await open_jio_website(
             mobile=data.mobile,
             operator=data.operatorName,
@@ -52,16 +159,13 @@ async def check_recharge(data: RechargeRequest):
         )
 
         logger.info(f"API RESPONSE : {result}")
-
         print("\nAPI RESPONSE:")
         print(result)
 
         return result
 
     except Exception as e:
-
         logger.exception("CHECK RECHARGE FAILED")
-
         print("\nCHECK RECHARGE FAILED")
         print(str(e))
 
