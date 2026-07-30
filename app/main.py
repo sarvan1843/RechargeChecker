@@ -7,6 +7,7 @@ import asyncio
 from app.models import RechargeRequest, UserRegister, UserLogin, OTPRequest, OTPVerify
 from app.logger import logger
 from app.scraper import open_jio_website
+from app.api_provider import check_recharge_b2b
 from app.database import init_db, create_user, get_user_by_mobile, get_user_by_email, store_otp, get_otp, delete_otp, update_last_login, get_all_users, toggle_user_status, delete_user
 from app.auth import hash_password, verify_password, generate_token, verify_token
 from app.pool import session_pool
@@ -179,7 +180,8 @@ async def check_recharge(data: RechargeRequest):
     print("=" * 60)
 
     try:
-        result = await open_jio_website(
+        # Using the new B2B API Provider instead of scraper
+        result = await check_recharge_b2b(
             mobile=data.mobile,
             operator=data.operatorName,
             circle=data.circle,
@@ -236,8 +238,8 @@ async def websocket_check_recharge(websocket: WebSocket):
                 await send_progress("Initializing API")
                 await send_progress("Fetching Token")
                 
-                # Fast API Scraper (V4.4) call
-                result = await open_jio_website(
+                # New B2B API Provider call
+                result = await check_recharge_b2b(
                     mobile=mobile,
                     operator=operator,
                     circle=circle
