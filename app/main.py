@@ -1,12 +1,15 @@
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import time
+import json
+import asyncio
 
 from app.models import RechargeRequest, UserRegister, UserLogin, OTPRequest, OTPVerify
 from app.logger import logger
 from app.scraper import open_jio_website
 from app.database import init_db, create_user, get_user_by_mobile, get_user_by_email, store_otp, get_otp, delete_otp, update_last_login
 from app.auth import hash_password, verify_password, generate_token, verify_token
+from app.pool import session_pool
 
 app = FastAPI(
     title="Recharge Checker API",
@@ -23,8 +26,15 @@ app.add_middleware(
 )
 
 @app.on_event("startup")
-def on_startup():
+async def on_startup():
     init_db()
+    # Initialize session pool in the background (prevents blocking startup)
+    asyncio.create_task(session_pool.start())
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    print("Shutting down app, closing session pool...")
+    await session_pool.close_all()
 
 @app.get("/")
 async def home():
@@ -197,3 +207,134 @@ async def check_recharge(data: RechargeRequest):
             "message": str(e),
             "error": str(e),
         }
+
+@app.websocket("/ws/check-recharge")
+async def websocket_check_recharge(websocket: WebSocket):
+    await websocket.accept()
+    print("WebSocket client connected.")
+    try:
+        while True:
+            data_str = await websocket.receive_text()
+            data = json.loads(data_str)
+            
+            row_id = data.get("row_id")
+            mobile = data.get("mobile")
+            operator = data.get("operator")
+            circle = data.get("circle")
+            
+            async def send_progress(stage: str):
+                try:
+                    await websocket.send_json({
+                        "row_id": row_id,
+                        "status": "progress",
+                        "stage": stage
+                    })
+                except Exception:
+                    pass
+                
+            try:
+                await send_progress("Initializing")
+                await send_progress("Connecting")
+                await send_progress("Opening Mobile Website")
+                
+                # Check out page from pool
+                page = await session_pool.get_page()
+                
+                try:
+                    await send_progress("Entering Number")
+                    # Step 1: Fill Mobile Number
+                    mobile_input = page.locator("input[type='tel']").first
+                    await mobile_input.wait_for(timeout=10000)
+                    await mobile_input.fill("")
+                    await mobile_input.type(mobile, delay=50)
+                    
+                    await send_progress("Selecting Prepaid")
+                    # Step 2: Select Prepaid
+                    prepaid_radio = page.locator("input[value='prepaid']").first
+                    if await prepaid_radio.count() > 0:
+                        is_checked = await prepaid_radio.is_checked()
+                        if not is_checked:
+                            await prepaid_radio.click()
+                            
+                    await send_progress("Selecting Jio")
+                    # Step 3: Select Operator Jio
+                    select_el = page.locator("select").first
+                    if await select_el.count() > 0:
+                        await select_el.select_option(label="Jio")
+                        
+                    await send_progress("Opening Plans")
+                    # Step 4: Click View Plans
+                    view_plans_btn = page.locator("text=/View Plans/i").first
+                    await view_plans_btn.wait_for(timeout=10000)
+                    await view_plans_btn.click()
+                    
+                    # Wait for plans categories tab to appear in the DOM (timeout 20s)
+                    await page.wait_for_selector("text=/Popular/i", timeout=20000)
+                    
+                    await send_progress("Searching Top Up")
+                    # Step 5: Check if 'Top Up' is present in plans page body
+                    body_text = await page.locator("body").inner_text()
+                    topup_found = "Top Up" in body_text
+                    
+                    await send_progress("Verification Complete")
+                    
+                    status = "Active" if topup_found else "Expired"
+                    message = "Recharge Active" if topup_found else "Recharge Expired"
+                    
+                    await websocket.send_json({
+                        "row_id": row_id,
+                        "status": "complete",
+                        "result": {
+                            "success": True,
+                            "status": status,
+                            "mobile": mobile,
+                            "operator": operator,
+                            "circle": circle,
+                            "topupAvailable": topup_found,
+                            "message": message,
+                            "error": None
+                        }
+                    })
+                except Exception as e:
+                    await websocket.send_json({
+                        "row_id": row_id,
+                        "status": "complete",
+                        "result": {
+                            "success": False,
+                            "status": "error",
+                            "mobile": mobile,
+                            "operator": operator,
+                            "circle": circle,
+                            "topupAvailable": False,
+                            "message": str(e),
+                            "error": str(e)
+                        }
+                    })
+                finally:
+                    # Close page session to release memory
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
+                    # Replenish pool
+                    asyncio.create_task(session_pool.replenish())
+                    
+            except Exception as outer_err:
+                await websocket.send_json({
+                    "row_id": row_id,
+                    "status": "complete",
+                    "result": {
+                        "success": False,
+                        "status": "error",
+                        "mobile": mobile,
+                        "operator": operator,
+                        "circle": circle,
+                        "topupAvailable": False,
+                        "message": str(outer_err),
+                        "error": str(outer_err)
+                    }
+                })
+    except WebSocketDisconnect:
+        print("WebSocket client disconnected.")
+    except Exception as ws_err:
+        print(f"WebSocket execution error: {ws_err}")

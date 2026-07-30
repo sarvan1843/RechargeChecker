@@ -1,218 +1,95 @@
-from playwright.async_api import async_playwright
-import traceback
-
+import asyncio
 from app.logger import logger
-from app.config import HEADLESS, SLOW_MO
-from app.detector import detect_topup
+from app.pool import session_pool
 
-print("########## NEW SCRAPER LOADED ##########")
+print("########## NEW SCRAPER ENGINE LOADED ##########")
 
 async def open_jio_website(
     mobile=None,
     operator=None,
     circle=None,
 ):
-    browser = None
     if mobile is None:
         mobile = "7869632727"
 
     print("=" * 60)
-    print("STEP 1 : SCRAPER STARTED")
+    print("NEW SCRAPER ENGINE INITIATED")
+    print(f"Mobile   : {mobile}")
+    print(f"Operator : {operator}")
+    print(f"Circle   : {circle}")
     print("=" * 60)
-    print("Mobile   :", mobile)
-    print("Operator :", operator)
-    print("Circle   :", circle)
 
-    logger.info("SCRAPER STARTED")
-
+    # Checked out pre-warmed page session from the background pool
+    page = await session_pool.get_page()
+    
     try:
-        async with async_playwright() as p:
-            print("Launching Browser with cloud optimizations...")
-            browser_args = [
-                "--disable-dev-shm-usage",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-gpu",
-                "--no-first-run",
-                "--no-zygote",
-                "--disable-extensions",
-            ]
-
-            browser = await p.chromium.launch(
-                headless=HEADLESS,
-                slow_mo=SLOW_MO,
-                args=browser_args,
-            )
-
-            page = await browser.new_page(
-                viewport={
-                    "width": 1366,
-                    "height": 768,
-                }
-            )
-
-            # Block heavy assets and tracking scripts to save network bandwidth and speed up loading by 4x
-            async def block_unnecessary_resources(route):
-                url = route.request.url.lower()
-                resource_type = route.request.resource_type
+        # Step 1: Fill Mobile Number
+        print("Entering mobile number...")
+        mobile_input = page.locator("input[type='tel']").first
+        await mobile_input.wait_for(timeout=10000)
+        await mobile_input.fill("")
+        await mobile_input.type(mobile, delay=50)
+        
+        # Step 2: Select Prepaid
+        print("Selecting Prepaid...")
+        prepaid_radio = page.locator("input[value='prepaid']").first
+        if await prepaid_radio.count() > 0:
+            is_checked = await prepaid_radio.is_checked()
+            if not is_checked:
+                await prepaid_radio.click()
                 
-                # Block tracking, analytics, ads, and heavy assets
-                is_tracking = any(pattern in url for pattern in [
-                    "google-analytics", "googletagmanager", "facebook", "hotjar",
-                    "doubleclick", "analytics", "telemetry", "tracking", "omni",
-                    "adservice", "partner"
-                ])
-                
-                if resource_type in ["image", "media", "font"] or is_tracking:
-                    try:
-                        await route.abort()
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        await route.continue_()
-                    except Exception:
-                        pass
-
-            await page.route("**/*", block_unnecessary_resources)
-
-            print("Opening Jio Website...")
-            await page.goto(
-                "https://www.jio.com/selfcare/recharge/mobility/",
-                wait_until="domcontentloaded",
-                timeout=25000,
-            )
-            print("Jio Page Opened")
-
-            input_box = page.locator("#submitNumber")
-            await input_box.wait_for(timeout=10000)
-            print("Input Box Found")
-
-            await input_box.fill("")
-            await input_box.type(mobile, delay=50)
-            print("Number Entered:", mobile)
-
-            # Locate the Continue button
-            continue_btn = page.locator('button[aria-label="Continue"]').first
-            if await continue_btn.count() == 0:
-                continue_btn = page.get_by_role("button", name="Continue")
-
-            await continue_btn.wait_for(timeout=10000)
-            print("Continue Button Found")
-
-            await continue_btn.click()
-            print("Continue Clicked. Waiting for recharge plans page...")
-
-            # Check for immediate non-Jio validation error on the page
-            try:
-                # Wait up to 3 seconds for non-Jio error text to appear
-                non_jio_error = page.locator("text=/not a Jio|valid Jio|Enter a valid/i").first
-                if await non_jio_error.is_visible(timeout=3000):
-                    err_txt = await non_jio_error.inner_text()
-                    print(f"Non-Jio validation error found: {err_txt}")
-                    await browser.close()
-                    return {
-                        "success": True,
-                        "status": "Non-Jio",
-                        "mobile": mobile,
-                        "operator": operator,
-                        "circle": circle,
-                        "topupAvailable": False,
-                        "message": "Non-Jio Number",
-                        "error": err_txt
-                    }
-            except Exception as err:
-                print(f"Proceeding (No immediate validation error text found: {err})")
-
-            # Wait for any of the category/plans selectors to appear (timeout 25s)
-            try:
-                recharge_indicator = page.locator(
-                    '[data-testid="desktopChangeCategory"], [data-testid="mobileChangeCategory"], .plans_roundedBoder__2CH9e'
-                ).first
-                await recharge_indicator.wait_for(timeout=25000)
-                print("Recharge page detected successfully.")
-            except Exception as e:
-                print(f"Warning: Recharge page load indicator not found (Timeout). Continuing anyway... Error: {e}")
-
-            print("Current URL:", page.url)
-            print("Page Title:", await page.title())
-
-            # Detect Top-up Voucher
-            result = await detect_topup(page)
-
-            topup_available = result["found"]
-            detection_method = result["method"]
-            confidence = result["confidence"]
-            categories = result["categories"]
-
-            print("\nDetector Result")
-            print("----------------------")
-            print("Topup      :", topup_available)
-            print("Method     :", detection_method)
-            print("Confidence :", confidence)
-            print("Categories :", len(categories))
-
-            # Save screenshot (optional, catch error if image rendering blocked)
-            try:
-                await page.screenshot(
-                    path="screenshots/after_continue.png",
-                    full_page=True,
-                )
-                print("Screenshot Saved to screenshots/after_continue.png")
-            except Exception as e:
-                print(f"Error saving screenshot: {e}")
-
-            print("Closing Browser...")
-            await browser.close()
-            browser = None
-
-            # Map the status to "Active" if topup is available, else "Expired" for Flutter compatibility
-            status_value = "Active" if topup_available else "Expired"
-
-            return {
-                "success": True,
-                "status": status_value,
-                "mobile": mobile,
-                "operator": operator,
-                "circle": circle,
-                "topupAvailable": topup_available,
-                "detectionMethod": detection_method,
-                "confidence": confidence,
-                "categories": categories,
-                "plan": "",
-                "validity": "",
-                "expiryDate": "",
-                "message": f"Top-Up Check Completed (Status: {status_value})",
-                "error": None,
-            }
-
+        # Step 3: Select operator Jio from select dropdown
+        print("Selecting operator Jio...")
+        select_el = page.locator("select").first
+        if await select_el.count() > 0:
+            await select_el.select_option(label="Jio")
+            
+        # Step 4: Click View Plans and wait for plans page
+        print("Clicking View Plans...")
+        view_plans_btn = page.locator("text=/View Plans/i").first
+        await view_plans_btn.wait_for(timeout=10000)
+        await view_plans_btn.click()
+        
+        # Wait for plans categories tab to appear in the DOM (timeout 20s)
+        await page.wait_for_selector("text=/Popular/i", timeout=20000)
+        print("Plans page loaded successfully.")
+        
+        # Step 5: Check if 'Top Up' is present in plans page body
+        body_text = await page.locator("body").inner_text()
+        topup_found = "Top Up" in body_text
+        print(f"Top Up category found: {topup_found}")
+        
+        status = "Active" if topup_found else "Expired"
+        message = "Recharge Active" if topup_found else "Recharge Expired"
+        
+        return {
+            "success": True,
+            "status": status,
+            "mobile": mobile,
+            "operator": operator,
+            "circle": circle,
+            "topupAvailable": topup_found,
+            "message": message,
+            "error": None
+        }
+        
     except Exception as e:
-        print("\n" + "=" * 80)
-        print("SCRAPER ERROR:")
-        traceback.print_exc()
-        print("=" * 80)
-
-        logger.exception("SCRAPER ERROR")
-
-        if browser:
-            try:
-                await browser.close()
-            except Exception:
-                pass
-
+        print(f"Verification workflow failed: {e}")
         return {
             "success": False,
-            "status": "Failed",
+            "status": "error",
             "mobile": mobile,
             "operator": operator,
             "circle": circle,
             "topupAvailable": False,
-            "detectionMethod": "",
-            "confidence": 0,
-            "categories": [],
-            "plan": "",
-            "validity": "",
-            "expiryDate": "",
-            "message": "Scraper Failed",
-            "error": str(e),
+            "message": str(e),
+            "error": str(e)
         }
+    finally:
+        # Close page session to release memory and trigger pool replenishment
+        try:
+            await page.close()
+        except Exception:
+            pass
+        # Replenish pool in the background
+        asyncio.create_task(session_pool.replenish())
