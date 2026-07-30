@@ -7,7 +7,7 @@ import asyncio
 from app.models import RechargeRequest, UserRegister, UserLogin, OTPRequest, OTPVerify
 from app.logger import logger
 from app.scraper import open_jio_website
-from app.database import init_db, create_user, get_user_by_mobile, get_user_by_email, store_otp, get_otp, delete_otp, update_last_login
+from app.database import init_db, create_user, get_user_by_mobile, get_user_by_email, store_otp, get_otp, delete_otp, update_last_login, get_all_users, toggle_user_status, delete_user
 from app.auth import hash_password, verify_password, generate_token, verify_token
 from app.pool import session_pool
 
@@ -270,3 +270,51 @@ async def websocket_check_recharge(websocket: WebSocket):
         print("WebSocket client disconnected.")
     except Exception as ws_err:
         print(f"WebSocket execution error: {ws_err}")
+# ==========================================
+# ADMIN PANEL ENDPOINTS
+# ==========================================
+import os
+
+ADMIN_SECRET = os.getenv('ADMIN_SECRET', 'admin123')
+
+def verify_admin(admin_token: str = Header(...)):
+    if admin_token != ADMIN_SECRET:
+        raise HTTPException(status_code=403, detail='Forbidden: Invalid Admin Token')
+    return True
+
+@app.get('/admin/users')
+async def admin_get_users(admin_token: str = Header(...)):
+    verify_admin(admin_token)
+    try:
+        users = get_all_users()
+        return {'status': 'success', 'users': users}
+    except Exception as e:
+        logger.error(f'Error fetching users: {str(e)}')
+        raise HTTPException(status_code=500, detail='Internal Server Error')
+
+@app.post('/admin/users/{email}/toggle')
+async def admin_toggle_user(email: str, admin_token: str = Header(...)):
+    verify_admin(admin_token)
+    try:
+        new_status = toggle_user_status(email)
+        if new_status:
+            return {'status': 'success', 'message': f'User status changed to {new_status}', 'new_status': new_status}
+        else:
+            raise HTTPException(status_code=404, detail='User not found')
+    except Exception as e:
+        logger.error(f'Error toggling user status: {str(e)}')
+        raise HTTPException(status_code=500, detail='Internal Server Error')
+
+@app.delete('/admin/users/{email}')
+async def admin_delete_user(email: str, admin_token: str = Header(...)):
+    verify_admin(admin_token)
+    try:
+        deleted = delete_user(email)
+        if deleted:
+            return {'status': 'success', 'message': 'User deleted successfully'}
+        else:
+            raise HTTPException(status_code=404, detail='User not found')
+    except Exception as e:
+        logger.error(f'Error deleting user: {str(e)}')
+        raise HTTPException(status_code=500, detail='Internal Server Error')
+

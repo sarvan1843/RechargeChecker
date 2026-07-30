@@ -1,219 +1,137 @@
 import os
-import threading
-from pathlib import Path
 from datetime import datetime
-import openpyxl
-from openpyxl import Workbook
+from pymongo import MongoClient
 
-EXCEL_DB_FILE = Path(__file__).resolve().parent.parent / "users_db.xlsx"
-lock = threading.Lock()
+# Fetch the MongoDB URI from environment variables
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+DB_NAME = "recharge_checker"
 
-def get_excel_workbook(file_path):
-    """
-    Safely opens or creates the workbook.
-    """
-    if not os.path.exists(file_path):
-        wb = Workbook()
-        # Initialize Users sheet
-        ws_users = wb.active
-        ws_users.title = "Users"
-        ws_users.append(["Mobile Number", "PIN", "Name", "Email", "Registration Date", "Last Login", "Status"])
-        
-        # Initialize OTPs sheet
-        ws_otps = wb.create_sheet(title="OTPs")
-        ws_otps.append(["Email", "OTP", "Expires At"])
-        
-        wb.save(file_path)
-        return wb
-    else:
-        return openpyxl.load_workbook(file_path)
+# Initialize MongoDB Client
+client = MongoClient(MONGO_URI)
+db = client[DB_NAME]
+users_col = db["Users"]
+otps_col = db["OTPs"]
 
 def init_db():
     """
-    Initializes the Excel spreadsheet database.
+    Initializes the MongoDB database connections (Indexes etc can be added here).
     """
-    print(f"Initializing Excel Database at: {EXCEL_DB_FILE}")
-    with lock:
-        wb = get_excel_workbook(EXCEL_DB_FILE)
-        wb.save(EXCEL_DB_FILE)
-        wb.close()
-    print("Excel Database initialized successfully.")
+    print(f"Initializing MongoDB Database connected to: {MONGO_URI.split('@')[-1] if '@' in MONGO_URI else MONGO_URI}")
+    # Create indexes for faster queries
+    users_col.create_index("mobile", unique=True)
+    users_col.create_index("email", unique=True)
+    otps_col.create_index("email", unique=True)
+    print("MongoDB Database initialized successfully.")
 
 def create_user(mobile, pin_hash, email=None, full_name=None):
     """
-    Appends a new user row to the Users sheet.
+    Inserts a new user document into the Users collection.
     """
-    with lock:
-        wb = get_excel_workbook(EXCEL_DB_FILE)
-        ws = wb["Users"]
+    # Verify uniqueness
+    if users_col.find_one({"mobile": str(mobile)}):
+        raise Exception("Mobile number already registered")
         
-        # Verify uniqueness of mobile number (fail-safe check)
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            if row[0] == mobile:
-                wb.close()
-                raise Exception("Mobile number already registered")
-        
-        reg_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        ws.append([
-            str(mobile),
-            str(pin_hash),
-            str(full_name or ""),
-            str(email or ""),
-            reg_date,
-            "",  # Last Login (empty initially)
-            "Active"  # Status
-        ])
-        
-        wb.save(EXCEL_DB_FILE)
-        wb.close()
+    reg_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    user_doc = {
+        "mobile": str(mobile),
+        "pin_hash": str(pin_hash),
+        "full_name": str(full_name or ""),
+        "email": str(email or ""),
+        "created_at": reg_date,
+        "last_login": "",
+        "status": "Active"
+    }
+    users_col.insert_one(user_doc)
     return True
 
 def get_user_by_mobile(mobile):
     """
-    Finds a user in the Users sheet by mobile number.
+    Finds a user in the Users collection by mobile number.
     """
-    with lock:
-        if not os.path.exists(EXCEL_DB_FILE):
-            return None
-        wb = openpyxl.load_workbook(EXCEL_DB_FILE, data_only=True)
-        ws = wb["Users"]
-        
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            # Check mobile matches (as string)
-            if row[0] and str(row[0]).strip() == str(mobile).strip():
-                user_dict = {
-                    "mobile": str(row[0]),
-                    "pin_hash": str(row[1]),
-                    "full_name": str(row[2] or ""),
-                    "email": str(row[3] or ""),
-                    "created_at": str(row[4] or ""),
-                    "last_login": str(row[5] or ""),
-                    "status": str(row[6] or "Active")
-                }
-                wb.close()
-                return user_dict
-        wb.close()
+    user = users_col.find_one({"mobile": str(mobile)})
+    if user:
+        user["_id"] = str(user["_id"])  # Convert ObjectId to string
+        return user
     return None
 
 def get_user_by_email(email):
     """
-    Finds a user in the Users sheet by email address.
+    Finds a user in the Users collection by email address.
     """
     if not email:
         return None
-    with lock:
-        if not os.path.exists(EXCEL_DB_FILE):
-            return None
-        wb = openpyxl.load_workbook(EXCEL_DB_FILE, data_only=True)
-        ws = wb["Users"]
-        
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            if row[3] and str(row[3]).strip().lower() == str(email).strip().lower():
-                user_dict = {
-                    "mobile": str(row[0]),
-                    "pin_hash": str(row[1]),
-                    "full_name": str(row[2] or ""),
-                    "email": str(row[3] or ""),
-                    "created_at": str(row[4] or ""),
-                    "last_login": str(row[5] or ""),
-                    "status": str(row[6] or "Active")
-                }
-                wb.close()
-                return user_dict
-        wb.close()
+    user = users_col.find_one({"email": str(email).lower()})
+    if user:
+        user["_id"] = str(user["_id"])
+        return user
     return None
 
 def update_last_login(mobile):
     """
-    Updates the Last Login timestamp for the user in the Users sheet.
+    Updates the Last Login timestamp for the user.
     """
-    with lock:
-        if not os.path.exists(EXCEL_DB_FILE):
-            return
-        wb = openpyxl.load_workbook(EXCEL_DB_FILE)
-        ws = wb["Users"]
-        
-        login_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        updated = False
-        
-        for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-            if row[0] and str(row[0]).strip() == str(mobile).strip():
-                # Write to column 6 (Last Login)
-                ws.cell(row=idx, column=6, value=login_date)
-                updated = True
-                break
-        
-        if updated:
-            wb.save(EXCEL_DB_FILE)
-        wb.close()
+    login_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    users_col.update_one(
+        {"mobile": str(mobile)},
+        {"$set": {"last_login": login_date}}
+    )
 
 def store_otp(email, otp, expires_at):
     """
-    Stores or replaces an OTP record in the OTPs sheet.
+    Stores or replaces an OTP record in the OTPs collection.
     """
-    with lock:
-        wb = get_excel_workbook(EXCEL_DB_FILE)
-        ws = wb["OTPs"]
-        
-        # Check if record already exists, if so overwrite it
-        row_found = None
-        for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-            if row[0] and str(row[0]).strip().lower() == str(email).strip().lower():
-                row_found = idx
-                break
-                
-        if row_found:
-            ws.cell(row=row_found, column=2, value=str(otp))
-            ws.cell(row=row_found, column=3, value=int(expires_at))
-        else:
-            ws.append([
-                str(email),
-                str(otp),
-                int(expires_at)
-            ])
-            
-        wb.save(EXCEL_DB_FILE)
-        wb.close()
+    otps_col.update_one(
+        {"email": str(email).lower()},
+        {"$set": {
+            "email": str(email).lower(),
+            "otp": str(otp),
+            "expires_at": int(expires_at)
+        }},
+        upsert=True
+    )
 
 def get_otp(email):
     """
-    Finds an OTP record in the OTPs sheet.
+    Finds an OTP record in the OTPs collection.
     """
-    with lock:
-        if not os.path.exists(EXCEL_DB_FILE):
-            return None
-        wb = openpyxl.load_workbook(EXCEL_DB_FILE, data_only=True)
-        ws = wb["OTPs"]
-        
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            if row[0] and str(row[0]).strip().lower() == str(email).strip().lower():
-                otp_dict = {
-                    "email": str(row[0]),
-                    "otp": str(row[1]),
-                    "expires_at": int(row[2])
-                }
-                wb.close()
-                return otp_dict
-        wb.close()
+    otp_doc = otps_col.find_one({"email": str(email).lower()})
+    if otp_doc:
+        otp_doc["_id"] = str(otp_doc["_id"])
+        return otp_doc
     return None
 
 def delete_otp(email):
     """
-    Deletes an OTP record from the OTPs sheet.
+    Deletes an OTP record from the OTPs collection.
     """
-    with lock:
-        if not os.path.exists(EXCEL_DB_FILE):
-            return
-        wb = openpyxl.load_workbook(EXCEL_DB_FILE)
-        ws = wb["OTPs"]
-        
-        row_to_delete = None
-        for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-            if row[0] and str(row[0]).strip().lower() == str(email).strip().lower():
-                row_to_delete = idx
-                break
-                
-        if row_to_delete:
-            ws.delete_rows(row_to_delete, 1)
-            wb.save(EXCEL_DB_FILE)
-        wb.close()
+    otps_col.delete_one({"email": str(email).lower()})
+
+# --- Admin Panel Functions ---
+
+def get_all_users():
+    """
+    Returns all users for the Admin Panel.
+    """
+    users = list(users_col.find({}, {"_id": 0, "pin_hash": 0})) # Exclude ID and passwords
+    return users
+
+def toggle_user_status(email):
+    """
+    Toggles the user's status between Active and Banned.
+    """
+    user = users_col.find_one({"email": str(email).lower()})
+    if user:
+        new_status = "Banned" if user.get("status", "Active") == "Active" else "Active"
+        users_col.update_one(
+            {"email": str(email).lower()},
+            {"$set": {"status": new_status}}
+        )
+        return new_status
+    return None
+
+def delete_user(email):
+    """
+    Deletes a user completely.
+    """
+    result = users_col.delete_one({"email": str(email).lower()})
+    return result.deleted_count > 0
