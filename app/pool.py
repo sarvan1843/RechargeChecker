@@ -46,7 +46,7 @@ class SessionPool:
 
     async def replenish(self):
         """
-        Maintains exactly 10 pages in the background pool.
+        Maintains pages in the background pool (dynamically sized based on server memory constraints).
         """
         while True:
             await asyncio.sleep(0.5)
@@ -56,7 +56,12 @@ class SessionPool:
             async with self.lock:
                 pool_size = len(self.pool)
             
-            if pool_size >= 10:
+            # Prevent Out-of-Memory (OOM) crashes on 512MB Render server by capping pool size to 1.
+            # Local PC has plenty of RAM, so keep the pool size at 10 for speed.
+            from app.config import IS_PROD
+            max_pool_size = 1 if IS_PROD else 10
+            
+            if pool_size >= max_pool_size:
                 continue
                 
             print(f"Pool size: {pool_size}/10. Warming up new page session...")
