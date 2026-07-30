@@ -5,7 +5,7 @@ import time
 from app.models import RechargeRequest, UserRegister, UserLogin, OTPRequest, OTPVerify
 from app.logger import logger
 from app.scraper import open_jio_website
-from app.database import init_db, create_user, get_user_by_mobile, get_user_by_email, store_otp, get_otp, delete_otp
+from app.database import init_db, create_user, get_user_by_mobile, get_user_by_email, store_otp, get_otp, delete_otp, update_last_login
 from app.auth import hash_password, verify_password, generate_token, verify_token
 
 app = FastAPI(
@@ -74,6 +74,12 @@ async def login(data: UserLogin):
         if not verify_password(data.pin, user["pin_hash"]):
             return {"success": False, "message": "Incorrect 4-digit PIN"}
         
+        # Update last login timestamp in Excel database
+        try:
+            update_last_login(data.mobile)
+        except Exception as update_err:
+            logger.warning(f"Failed to update last login timestamp: {update_err}")
+
         token = generate_token(data.mobile)
         return {
             "success": True,

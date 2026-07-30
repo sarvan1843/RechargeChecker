@@ -17,3 +17,7 @@ screenshots/
 # OS temporary files
 .DS_Store
 Thumbs.db
+
+# Databases & spreadsheets
+*.db
+*.xlsx
