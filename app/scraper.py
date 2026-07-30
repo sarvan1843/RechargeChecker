@@ -10,8 +10,8 @@ from app.logger import logger
 
 print("########## V5.0 HYBRID SCRAPER LOADED ##########")
 
-# Concurrency limit: max 3 browsers at a time to prevent RAM overload
-browser_semaphore = asyncio.Semaphore(3)
+# Concurrency limit: max 2 browsers at a time to prevent RAM overload
+browser_semaphore = asyncio.Semaphore(2)
 
 async def verify_is_jio_number(mobile: str) -> bool:
     """
